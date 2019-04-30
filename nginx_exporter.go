@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/log"
@@ -22,6 +24,7 @@ var (
 	listeningAddress = flag.String("telemetry.address", ":9113", "Address on which to expose metrics.")
 	metricsEndpoint  = flag.String("telemetry.endpoint", "/metrics", "Path under which to expose metrics.")
 	nginxScrapeURI   = flag.String("nginx.scrape_uri", "http://localhost/nginx_status", "URI to nginx stub status page")
+	pidFile          = flag.String("pid", "/var/run/nginx_exporter.pid", "PID file")
 	insecure         = flag.Bool("insecure", true, "Ignore server certificate if using https")
 )
 
@@ -181,6 +184,7 @@ func main() {
 
 	exporter := NewExporter(*nginxScrapeURI)
 	prometheus.MustRegister(exporter)
+	writePidFile(*pidFile)
 
 	log.Infof("Starting Server: %s", *listeningAddress)
 	http.Handle(*metricsEndpoint, prometheus.Handler())
@@ -198,4 +202,24 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 	log.Fatal(http.ListenAndServe(*listeningAddress, nil))
+}
+
+func writePidFile(pidFile string) error {
+	// Read in the pid file as a slice of bytes.
+	if piddata, err := ioutil.ReadFile(pidFile); err == nil {
+		// Convert the file contents to an integer.
+		if pid, err := strconv.Atoi(string(piddata)); err == nil {
+			// Look for the pid in the process list.
+			if process, err := os.FindProcess(pid); err == nil {
+				// Send the process a signal zero kill.
+				if err := process.Signal(syscall.Signal(0)); err == nil {
+					// We only get an error if the pid isn't running, or it's not ours.
+					return fmt.Errorf("pid already running: %d", pid)
+				}
+			}
+		}
+	}
+	// If we get here, then the pidfile didn't exist,
+	// or the pid in it doesn't belong to the user running this app.
+	return ioutil.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0664)
 }
